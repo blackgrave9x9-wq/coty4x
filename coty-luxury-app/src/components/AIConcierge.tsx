@@ -120,7 +120,7 @@ export default function AIConcierge({ user, lang, onAddToCart, onShowRegistratio
       ];
 
       const response = await ai.models.generateContent({
-        model: "gemini-3-flash-preview",
+        model: "gemini-1.5flash",
         contents: [
           ...messages.slice(1).map(m => ({ 
             role: m.role === 'assistant' ? 'model' : 'user', 
