@@ -27,6 +27,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ user, onLogout, 
   const [statusFilter, setStatusFilter] = useState<Order['status'] | 'all' | 'subscription'>('all');
   const [importStatus, setImportStatus] = useState<{ type: 'success' | 'error', message: string } | null>(null);
   const [orderToDelete, setOrderToDelete] = useState<string | null>(null);
+  const [userToDelete, setUserToDelete] = useState<string | null>(null);
   const [isDeleting, setIsDeleting] = useState(false);
   const [isApplyingPopup, setIsApplyingPopup] = useState(false);
 
@@ -106,6 +107,18 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ user, onLogout, 
       setOrderToDelete(null);
     } catch (error) {
       handleFirestoreError(error, OperationType.DELETE, 'orders/' + orderId);
+    } finally {
+      setIsDeleting(false);
+    }
+  };
+
+  const deleteUser = async (uid: string) => {
+    setIsDeleting(true);
+    try {
+      await deleteDoc(doc(db, 'users', uid));
+      setUserToDelete(null);
+    } catch (error) {
+      handleFirestoreError(error, OperationType.DELETE, 'users/' + uid);
     } finally {
       setIsDeleting(false);
     }
@@ -429,11 +442,11 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ user, onLogout, 
   });
 
   return (
-    <div className="min-h-screen p-4 sm:p-8">
-      {/* Delete Confirmation Modal */}
+    <div className="min-h-screen p-4 sm:p-8 bg-bg">
+      {/* Delete Order Confirmation Modal */}
       {orderToDelete && (
         <div className="fixed inset-0 z-[200] flex items-center justify-center bg-gray-900/60 backdrop-blur-sm p-4">
-          <div className="glassmorphism p-8 rounded-[32px] shadow-2xl space-y-6 max-w-sm w-full border border-white/10">
+          <div className="bg-white p-8 rounded-[32px] shadow-2xl space-y-6 max-w-sm w-full border border-primary/10">
             <h2 className="text-2xl font-serif italic text-primary">{t(user.language || 'en', 'confirmDelete')}</h2>
             <p className="text-sm text-text/60 leading-relaxed">
               Are you sure you want to delete this order?
@@ -442,7 +455,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ user, onLogout, 
               <button 
                 onClick={() => setOrderToDelete(null)} 
                 disabled={isDeleting}
-                className="flex-1 py-3 bg-white/10 hover:bg-white/20 rounded-xl font-bold transition-all disabled:opacity-50"
+                className="flex-1 py-3 bg-gray-100 hover:bg-gray-200 rounded-xl font-bold transition-all disabled:opacity-50"
               >
                 {t(user.language || 'en', 'cancel')}
               </button>
@@ -457,7 +470,36 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ user, onLogout, 
           </div>
         </div>
       )}
-      <div className="max-w-7xl mx-auto glassmorphism rounded-[40px] p-8 sm:p-12 shadow-2xl border border-white/10">
+
+      {/* Delete User Confirmation Modal */}
+      {userToDelete && (
+        <div className="fixed inset-0 z-[200] flex items-center justify-center bg-gray-900/60 backdrop-blur-sm p-4">
+          <div className="bg-white p-8 rounded-[32px] shadow-2xl space-y-6 max-w-sm w-full border border-primary/10">
+            <h2 className="text-2xl font-serif italic text-primary">{t(user.language || 'en', 'confirmDelete')}</h2>
+            <p className="text-sm text-text/60 leading-relaxed">
+              Are you sure you want to delete this user? This action cannot be undone.
+            </p>
+            <div className="flex gap-3">
+              <button 
+                onClick={() => setUserToDelete(null)} 
+                disabled={isDeleting}
+                className="flex-1 py-3 bg-gray-100 hover:bg-gray-200 rounded-xl font-bold transition-all disabled:opacity-50"
+              >
+                {t(user.language || 'en', 'cancel')}
+              </button>
+              <button 
+                onClick={() => userToDelete && deleteUser(userToDelete)} 
+                disabled={isDeleting}
+                className="flex-1 py-3 bg-red-500 text-white rounded-xl font-bold shadow-lg shadow-red-500/20 hover:bg-red-600 transition-all disabled:opacity-50 flex items-center justify-center gap-2"
+              >
+                {isDeleting ? <RefreshCw className="animate-spin" size={18} /> : t(user.language || 'en', 'delete')}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      <div className="max-w-7xl mx-auto bg-white rounded-[40px] p-8 sm:p-12 shadow-2xl border border-primary/10">
         <header className="flex flex-col sm:flex-row justify-between items-center mb-12 gap-6">
           <div className="flex items-center gap-4">
             <div className="w-12 h-12 bg-primary rounded-2xl flex items-center justify-center shadow-lg transform -rotate-6">
@@ -807,7 +849,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ user, onLogout, 
             ) : activeTab === 'users' ? (
               <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                 {users.map(u => (
-                  <div key={u.uid} className="glassmorphism p-6 rounded-[24px] flex items-center gap-6 border border-white/10 shadow-lg transition-all hover:scale-[1.02]">
+                  <div key={u.uid} className="bg-white p-6 rounded-[24px] flex items-center gap-6 border border-primary/10 shadow-lg transition-all hover:scale-[1.02]">
                     <div className="w-14 h-14 bg-primary/10 rounded-2xl flex items-center justify-center border border-primary/20 shadow-inner">
                       <UserIcon className="text-primary" size={28} />
                     </div>
@@ -819,14 +861,22 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ user, onLogout, 
                         <span className="text-[10px] font-bold text-primary/60">Points: {u.loyaltyPoints || 0}</span>
                       </div>
                     </div>
-                    <select 
-                      value={u.role}
-                      onChange={(e) => updateUserRole(u.uid, e.target.value as any)}
-                      className="bg-white/10 backdrop-blur-md border border-white/10 rounded-xl px-4 py-2 text-[10px] font-bold uppercase tracking-widest focus:outline-none focus:border-primary"
-                    >
-                      <option value="client">Client</option>
-                      <option value="admin">Admin</option>
-                    </select>
+                    <div className="flex flex-col gap-2">
+                      <select 
+                        value={u.role}
+                        onChange={(e) => updateUserRole(u.uid, e.target.value as any)}
+                        className="bg-gray-50 border border-primary/10 rounded-xl px-4 py-2 text-[10px] font-bold uppercase tracking-widest focus:outline-none focus:border-primary"
+                      >
+                        <option value="client">Client</option>
+                        <option value="admin">Admin</option>
+                      </select>
+                      <button 
+                        onClick={() => setUserToDelete(u.uid)}
+                        className="w-full py-2 bg-red-50 text-red-500 hover:bg-red-500 hover:text-white rounded-xl transition-all border border-red-500/20 flex items-center justify-center gap-2 text-[10px] font-bold uppercase tracking-widest"
+                      >
+                        <Trash2 size={14} /> Delete
+                      </button>
+                    </div>
                   </div>
                 ))}
               </div>
