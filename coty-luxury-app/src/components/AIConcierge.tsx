@@ -23,6 +23,7 @@ export default function AIConcierge({ user, lang, onAddToCart, onShowRegistratio
   ]);
   const [input, setInput] = useState('');
   const [isLoading, setIsLoading] = useState(false);
+  const [isStreaming, setIsStreaming] = useState(false);
   const [products, setProducts] = useState<Product[]>([]);
   const [settings, setSettings] = useState<any>({});
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -60,23 +61,20 @@ export default function AIConcierge({ user, lang, onAddToCart, onShowRegistratio
     setIsLoading(true);
 
     try {
-      const systemPrompt = `You are "LYRA", the Coty Luxury AI Assistant. 
-            
-      User Info: ${user ? `Name: ${user.displayName}, Phone: ${user.phoneNumber}, Email: ${user.email}` : 'Not logged in'}
-      Product Catalog: ${JSON.stringify(products.map(p => ({ id: p.id, name: p.name, price: p.price, category: p.category })))}
+      const systemPrompt = `You are "LYRA", the Coty Luxury AI Assistant.
+      Customer: ${user ? `${user.displayName}, ${user.phoneNumber}` : 'Guest'}
+      Products: ${JSON.stringify(products.map(p => ({ id: p.id, name: p.name, price: p.price })))}
       
-      Instructions:
-      1. Respond FAST, VERY SHORT, and DIRECT.
-      2. Use very short sentences. Avoid long explanations.
-      3. When a user mentions products they want, LIST them clearly with their prices and show the TOTAL COST in TZS.
-      4. After listing the items and total, you MUST ask for confirmation in Swahili: "Je, unathibitisha oda hii? Jibu 'ndio' au 'hapana'."
-      5. If the user says "ndio", use the 'placeOrder' tool.
-      6. If the user says "hapana", ask: "Unataka kurekebisha nini?"
-      7. Once they provide changes, update the list and ask for confirmation again.
-      8. If the user is not logged in or hasn't provided details, ask them to login/register first.
-      9. ALWAYS use Swahili for the conversation.
-      10. Avoid any conversational filler. Be like a professional concierge.
-      11. If the user wants to see the registration form, use the 'showRegistrationForm' tool.`;
+      Rules:
+      1. Communicate in ANY language the user prefers (Swahili, English, French, etc.).
+      2. Use correct grammar and professional tone. For Swahili, ensure standard grammar (e.g., use "ya kubwa" instead of "ykubwa").
+      3. Use product names EXACTLY as provided in the list. Do not translate or modify them.
+      4. Respond FAST, SHORT, and accurately.
+      5. List items clearly and show the TOTAL in TZS.
+      6. Ask for confirmation in the user's language (e.g., "Je, unathibitisha oda hii? Jibu 'ndio' au 'hapana'").
+      7. If the user confirms, use 'placeOrder'.
+      8. If Guest, ask them to login.
+      9. Use 'showRegistrationForm' if they need to register.`;
 
       const tools = [
         {
@@ -119,7 +117,7 @@ export default function AIConcierge({ user, lang, onAddToCart, onShowRegistratio
         }
       ];
 
-      const response = await ai.models.generateContent({
+      const responseStream = await ai.models.generateContentStream({
         model: "gemini-flash-latest",
         contents: [
           ...messages.slice(1).map(m => ({ 
@@ -130,87 +128,121 @@ export default function AIConcierge({ user, lang, onAddToCart, onShowRegistratio
         ],
         config: {
           systemInstruction: systemPrompt,
-          tools
+          tools,
+          temperature: 0.7,
+          topP: 0.8,
+          topK: 40,
         }
       });
 
-      const message = response.candidates?.[0]?.content;
-      if (!message) throw new Error("No response from AI");
+      let fullText = '';
+      setIsStreaming(true);
 
-      if (response.functionCalls) {
-        for (const toolCall of response.functionCalls) {
-          const name = toolCall.name;
-          const args = toolCall.args as any;
-
-          if (name === 'checkLoyaltyStatus') {
-            const credits = user?.loyaltyCredits || 0;
-            const points = user?.loyaltyPoints || 0;
-            const text = lang === 'sw' 
-              ? `Una krediti ${credits} na pointi ${points}. Baki krediti ${30 - (credits % 30)} kupata zawadi inayofuata!` 
-              : `You have ${credits} credits and ${points} points. You need ${30 - (credits % 30)} more credits for your next reward!`;
-            setMessages(prev => [...prev, { role: 'assistant', content: text }]);
-            setIsLoading(false);
-            return;
+      for await (const chunk of responseStream) {
+        const chunkText = chunk.text;
+        
+        if (chunkText) {
+          if (isStreaming) setIsStreaming(false);
+          if (fullText === '') {
+            setMessages(prev => [...prev, { role: 'assistant', content: chunkText }]);
+          } else {
+            setMessages(prev => {
+              const newMsgs = [...prev];
+              newMsgs[newMsgs.length - 1].content += chunkText;
+              return newMsgs;
+            });
           }
+          fullText += chunkText;
+        }
 
-          if (name === 'showRegistrationForm') {
-            onShowRegistration?.();
-            setMessages(prev => [...prev, { role: 'assistant', content: lang === 'sw' ? "Nimekufungulia fomu ya usajili." : "I have opened the registration form for you." }]);
-            setIsLoading(false);
-            return;
-          }
+        if (chunk.functionCalls) {
+          for (const toolCall of chunk.functionCalls) {
+            const name = toolCall.name;
+            const args = toolCall.args as any;
 
-          if (name === 'placeOrder') {
-            if (!user || !user.phoneNumber) {
-              setMessages(prev => [...prev, { role: 'assistant', content: t(lang, 'aiLoginRequired') }]);
+            if (name === 'checkLoyaltyStatus') {
+              const credits = user?.loyaltyCredits || 0;
+              const points = user?.loyaltyPoints || 0;
+              const text = lang === 'sw' 
+                ? `\n\nUna krediti ${credits} na pointi ${points}. Baki krediti ${30 - (credits % 30)} kupata zawadi inayofuata!` 
+                : `\n\nYou have ${credits} credits and ${points} points. You need ${30 - (credits % 30)} more credits for your next reward!`;
+              
+              setMessages(prev => {
+                const newMsgs = [...prev];
+                newMsgs[newMsgs.length - 1].content += text;
+                return newMsgs;
+              });
               setIsLoading(false);
               return;
             }
 
-            const newOrder: any = {
-              userId: user.uid,
-              items: args.items,
-              totalAmount: args.totalAmount,
-              status: 'pending',
-              createdAt: new Date().toISOString(),
-              customerName: user.displayName || '',
-              customerPhone: user.phoneNumber || '',
-              customerEmail: user.email || '',
-              source: 'lyra',
-              pointsAwarded: true
-            };
+            if (name === 'showRegistrationForm') {
+              onShowRegistration?.();
+              const text = lang === 'sw' ? "\n\nNimekufungulia fomu ya usajili." : "\n\nI have opened the registration form for you.";
+              setMessages(prev => {
+                const newMsgs = [...prev];
+                newMsgs[newMsgs.length - 1].content += text;
+                return newMsgs;
+              });
+              setIsLoading(false);
+              return;
+            }
 
-            await addDoc(collection(db, 'orders'), newOrder);
-            
-            const userRef = doc(db, 'users', user.uid);
-            await updateDoc(userRef, {
-              loyaltyCredits: increment(3 * args.items.length),
-              loyaltyPoints: increment(Math.floor(args.totalAmount / 1000))
-            });
-            
-            let successMsg = t(lang, 'aiOrderSuccess');
-            successMsg = successMsg.replace('{name}', user.displayName || '');
-            successMsg = successMsg.replace('{amount}', args.totalAmount.toLocaleString());
-            successMsg = successMsg.replace('{phone}', user.phoneNumber || '');
+            if (name === 'placeOrder') {
+              if (!user || !user.phoneNumber) {
+                setMessages(prev => {
+                  const newMsgs = [...prev];
+                  newMsgs[newMsgs.length - 1].content += `\n\n${t(lang, 'aiLoginRequired')}`;
+                  return newMsgs;
+                });
+                setIsLoading(false);
+                return;
+              }
 
-            setMessages(prev => [...prev, { 
-              role: 'assistant', 
-              content: successMsg,
-              isOrder: true
-            }]);
-            setIsLoading(false);
-            return;
+              const newOrder: any = {
+                userId: user.uid,
+                items: args.items,
+                totalAmount: args.totalAmount,
+                status: 'pending',
+                createdAt: new Date().toISOString(),
+                customerName: user.displayName || '',
+                customerPhone: user.phoneNumber || '',
+                customerEmail: user.email || '',
+                source: 'lyra',
+                pointsAwarded: true
+              };
+
+              await addDoc(collection(db, 'orders'), newOrder);
+              
+              const userRef = doc(db, 'users', user.uid);
+              await updateDoc(userRef, {
+                loyaltyCredits: increment(3 * args.items.length),
+                loyaltyPoints: increment(Math.floor(args.totalAmount / 1000))
+              });
+              
+              let successMsg = t(lang, 'aiOrderSuccess');
+              successMsg = successMsg.replace('{name}', user.displayName || '');
+              successMsg = successMsg.replace('{amount}', args.totalAmount.toLocaleString());
+              successMsg = successMsg.replace('{phone}', user.phoneNumber || '');
+
+              setMessages(prev => {
+                const newMsgs = [...prev];
+                newMsgs[newMsgs.length - 1].content += `\n\n${successMsg}`;
+                newMsgs[newMsgs.length - 1].isOrder = true;
+                return newMsgs;
+              });
+              setIsLoading(false);
+              return;
+            }
           }
         }
       }
-
-      const text = response.text || t(lang, 'aiFallbackError');
-      setMessages(prev => [...prev, { role: 'assistant', content: text }]);
     } catch (error) {
       console.error("AI Error:", error);
       setMessages(prev => [...prev, { role: 'assistant', content: t(lang, 'aiError') }]);
     } finally {
       setIsLoading(false);
+      setIsStreaming(false);
     }
   };
 
@@ -284,7 +316,7 @@ export default function AIConcierge({ user, lang, onAddToCart, onShowRegistratio
                   </div>
                 </motion.div>
               ))}
-              {isLoading && (
+              {isLoading && isStreaming && (
                 <div className="flex justify-start">
                   <div className="bg-white p-4 rounded-3xl rounded-tl-none shadow-sm border border-primary/5 flex items-center gap-2">
                     <div className="flex gap-1">
