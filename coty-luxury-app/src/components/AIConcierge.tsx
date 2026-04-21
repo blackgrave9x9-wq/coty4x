@@ -303,7 +303,7 @@ export default function AIConcierge({ user, lang, onAddToCart, onShowRegistratio
                       <div className="w-1.5 h-1.5 bg-primary/30 rounded-full animate-bounce [animation-delay:0.2s]" />
                       <div className="w-1.5 h-1.5 bg-primary/30 rounded-full animate-bounce [animation-delay:0.4s]" />
                     </div>
-                    <span className="text-xs text-primary/50 italic">{t(lang, 'aiThinking')}</span>
+                    <span className="text-xs text-primary/50 italic">{t(lang, 'Thinking')}</span>
                   </div>
                 </div>
               )}
