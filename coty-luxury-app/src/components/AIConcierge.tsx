@@ -129,7 +129,7 @@ export default function AIConcierge({ user, lang, onAddToCart, onShowRegistratio
 
       const ai = getAI();
       const response = await ai.models.generateContent({
-        model: "gemini-1.5-latest",
+        model: "gemini-1.5-flash",
         contents: [
           ...messages.slice(1).map(m => ({ 
             role: m.role === 'assistant' ? 'model' : 'user', 
