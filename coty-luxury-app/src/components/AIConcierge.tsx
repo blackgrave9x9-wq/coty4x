@@ -8,9 +8,10 @@ import ReactMarkdown from 'react-markdown';
 import { t } from '../i18n';
 import { GoogleGenAI, Type } from "@google/genai";
 
-let genAI: GoogleGenAI | null = null;
+let genAI: any = null;
 function getAI() {
   if (!genAI) {
+    // The @google/genai SDK usually uses a direct class or factory
     genAI = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY || '' });
   }
   return genAI;
@@ -68,30 +69,24 @@ export default function AIConcierge({ user, lang, onAddToCart, onShowRegistratio
     setIsLoading(true);
 
     try {
-      const systemPrompt = `You are "LYRA", the Coty AI Assistant. 
-            
-      User Info: ${user ? `Name: ${user.displayName}, Phone: ${user.phoneNumber}, Email: ${user.email}` : 'Not logged in'}
-      Product Catalog: ${JSON.stringify(products.map(p => ({ id: p.id, name: p.name, price: p.price, category: p.category })))}
+      const systemPrompt = `Wewe ni "LYRA", Concierge wa Coty Luxury. 
+      Respond VERY FAST and SHORT. Use Swahili ALWAYS.
+      User: ${user ? `${user.displayName}` : 'Guest'}
+      Catalog: ${JSON.stringify(products.map(p => ({ n: p.name, p: p.price })))}
       
-      Instructions:
-      1. Respond FAST, VERY SHORT, and DIRECT.
-      2. Use very short sentences. Avoid long explanations make responses fast as you can.
-      3. When a user mentions products they want, LIST them clearly with their prices and show the TOTAL COST in TZS.
-      4. After listing the items and total, you MUST ask for confirmation in Swahili: "Je, unathibitisha oda hii? Jibu 'ndio' au 'hapana'."
-      5. If the user says "ndio", use the 'placeOrder' tool.
-      6. If the user says "hapana", ask: "Unataka kurekebisha nini?"
-      7. Once they provide changes, update the list and ask for confirmation again.
-      8. If the user is not logged in or hasn't provided details, ask them to login/register first.
-      9. ALWAYS use Swahili for the conversation.
-      10. Avoid any conversational filler. Be like a professional concierge.
-      11. If the user wants to see the registration form, use the 'showRegistrationForm' tool.`;
+      Rules:
+      1. Short sentences only.
+      2. If user wants items, LIST them + TOTAL in TZS.
+      3. Ask confirmation: "Je, unathibitisha oda hii? Jibu 'ndio' au 'hapana'."
+      4. Use 'placeOrder' ONLY after 'ndio'.
+      5. Use 'showRegistrationForm' for login/register needs.`;
 
       const tools = [
         {
           functionDeclarations: [
             {
               name: "placeOrder",
-              description: "Place an order for the user with specified items. ONLY call this after the user says 'ndio' to confirm the list and total.",
+              description: "Place order after user confirms 'ndio'.",
               parameters: {
                 type: Type.OBJECT,
                 properties: {
@@ -115,12 +110,12 @@ export default function AIConcierge({ user, lang, onAddToCart, onShowRegistratio
             },
             {
               name: "showRegistrationForm",
-              description: "Show the registration or profile completion form to the user.",
+              description: "Show registration form.",
               parameters: { type: Type.OBJECT, properties: {} }
             },
             {
               name: "checkLoyaltyStatus",
-              description: "Check the user's current loyalty points and credits.",
+              description: "Check user points/credits.",
               parameters: { type: Type.OBJECT, properties: {} }
             }
           ]
@@ -128,7 +123,7 @@ export default function AIConcierge({ user, lang, onAddToCart, onShowRegistratio
       ];
 
       const ai = getAI();
-      const response = await ai.models.generateContent({
+      const stream = await ai.models.generateContentStream({
         model: "gemini-flash-latest",
         contents: [
           ...messages.slice(1).map(m => ({ 
@@ -140,86 +135,120 @@ export default function AIConcierge({ user, lang, onAddToCart, onShowRegistratio
         config: {
           tools,
           systemInstruction: systemPrompt,
+          temperature: 0.1,
         }
       });
 
-      const message = response.candidates?.[0]?.content;
-      if (!message) throw new Error("No response from AI");
+      let fullText = "";
+      let hasFunctionCall = false;
+      let firstChunk = true;
+      let collectedFunctionCalls: any[] = [];
 
-      if (response.functionCalls) {
-        const functionCalls = response.functionCalls;
-        for (const toolCall of functionCalls) {
-          const name = toolCall.name;
-          const args = toolCall.args as any;
+      // Add a placeholder message for the assistant
+      setMessages(prev => [...prev, { role: 'assistant', content: "" }]);
 
-          if (name === 'checkLoyaltyStatus') {
-            const credits = user?.loyaltyCredits || 0;
-            const points = user?.loyaltyPoints || 0;
-            const text = lang === 'sw' 
-              ? `Una krediti ${credits} na pointi ${points}. Baki krediti ${30 - (credits % 30)} kupata zawadi inayofuata!` 
-              : `You have ${credits} credits and ${points} points. You need ${30 - (credits % 30)} more credits for your next reward!`;
-            setMessages(prev => [...prev, { role: 'assistant', content: text }]);
-            setIsLoading(false);
-            return;
-          }
-
-          if (name === 'showRegistrationForm') {
-            onShowRegistration?.();
-            setMessages(prev => [...prev, { role: 'assistant', content: lang === 'sw' ? "Nimekufungulia fomu ya usajili." : "I have opened the registration form for you." }]);
-            setIsLoading(false);
-            return;
-          }
-
-          if (name === 'placeOrder') {
-            if (!user || !user.phoneNumber) {
-              setMessages(prev => [...prev, { role: 'assistant', content: t(lang, 'aiLoginRequired') }]);
-              setIsLoading(false);
-              return;
-            }
-
-            const newOrder: any = {
-              userId: user.uid,
-              items: args.items,
-              totalAmount: args.totalAmount,
-              status: 'pending',
-              createdAt: new Date().toISOString(),
-              customerName: user.displayName || '',
-              customerPhone: user.phoneNumber || '',
-              customerEmail: user.email || '',
-              source: 'lyra',
-              pointsAwarded: true
-            };
-
-            await addDoc(collection(db, 'orders'), newOrder);
-            
-            const userRef = doc(db, 'users', user.uid);
-            await updateDoc(userRef, {
-              loyaltyCredits: increment(3 * args.items.length),
-              loyaltyPoints: increment(Math.floor(args.totalAmount / 1000))
-            });
-            
-            let successMsg = t(lang, 'aiOrderSuccess');
-            successMsg = successMsg.replace('{name}', user.displayName || '');
-            successMsg = successMsg.replace('{amount}', args.totalAmount.toLocaleString());
-            successMsg = successMsg.replace('{phone}', user.phoneNumber || '');
-
-            setMessages(prev => [...prev, { 
-              role: 'assistant', 
-              content: successMsg,
-              isOrder: true
-            }]);
-            setIsLoading(false);
-            return;
-          }
+      for await (const chunk of stream) {
+        if (firstChunk) {
+          setIsLoading(false);
+          firstChunk = false;
+        }
+        
+        const text = chunk.text;
+        
+        if (text) {
+          fullText += text;
+          setMessages(prev => {
+            const next = [...prev];
+            next[next.length - 1] = { ...next[next.length - 1], content: fullText };
+            return next;
+          });
+        }
+        
+        const fCalls = chunk.candidates?.[0]?.content?.parts?.filter((p: any) => p.functionCall).map((p: any) => p.functionCall);
+        if (fCalls && fCalls.length > 0) {
+          hasFunctionCall = true;
+          collectedFunctionCalls.push(...fCalls);
         }
       }
 
-      const text = response.text || t(lang, 'aiFallbackError');
-      setMessages(prev => [...prev, { role: 'assistant', content: text }]);
+      if (hasFunctionCall && collectedFunctionCalls.length > 0) {
+        // Remove the placeholder if it's just a function call with no text
+        if (!fullText) {
+          setMessages(prev => prev.slice(0, -1));
+        }
+
+        for (const toolCall of collectedFunctionCalls) {
+          const name = toolCall.name;
+          const args = toolCall.args as any;
+
+            if (name === 'checkLoyaltyStatus') {
+              const credits = user?.loyaltyCredits || 0;
+              const points = user?.loyaltyPoints || 0;
+              const text = lang === 'sw' 
+                ? `Una krediti ${credits} na pointi ${points}. Baki krediti ${30 - (credits % 30)} kupata zawadi inayofuata!` 
+                : `You have ${credits} credits and ${points} points. You need ${30 - (credits % 30)} more credits for your next reward!`;
+              setMessages(prev => [...prev, { role: 'assistant', content: text }]);
+              return;
+            }
+
+            if (name === 'showRegistrationForm') {
+              onShowRegistration?.();
+              setMessages(prev => [...prev, { role: 'assistant', content: lang === 'sw' ? "Nimekufungulia fomu ya usajili." : "I have opened the registration form for you." }]);
+              return;
+            }
+
+            if (name === 'placeOrder') {
+              if (!user || !user.phoneNumber) {
+                setMessages(prev => [...prev, { role: 'assistant', content: t(lang, 'aiLoginRequired') }]);
+                return;
+              }
+
+              const newOrder: any = {
+                userId: user.uid,
+                items: args.items,
+                totalAmount: args.totalAmount,
+                status: 'pending',
+                createdAt: new Date().toISOString(),
+                customerName: user.displayName || '',
+                customerPhone: user.phoneNumber || '',
+                customerEmail: user.email || '',
+                source: 'lyra',
+                pointsAwarded: true
+              };
+
+              await addDoc(collection(db, 'orders'), newOrder);
+              
+              const userRef = doc(db, 'users', user.uid);
+              await updateDoc(userRef, {
+                loyaltyCredits: increment(3 * args.items.length),
+                loyaltyPoints: increment(Math.floor(args.totalAmount / 1000))
+              });
+              
+              let successMsg = t(lang, 'aiOrderSuccess');
+              successMsg = successMsg.replace('{name}', user.displayName || '');
+              successMsg = successMsg.replace('{amount}', args.totalAmount.toLocaleString());
+              successMsg = successMsg.replace('{phone}', user.phoneNumber || '');
+
+              setMessages(prev => [...prev, { 
+                role: 'assistant', 
+                content: successMsg,
+                isOrder: true
+              }]);
+              return;
+            }
+          }
+        }
+
+      if (!fullText && !hasFunctionCall) {
+        setMessages(prev => {
+          const next = [...prev];
+          next[next.length - 1] = { ...next[next.length - 1], content: t(lang, 'aiFallbackError') };
+          return next;
+        });
+      }
     } catch (error: any) {
       console.error("AI Error:", error);
-      const errorMsg = error.message || t(lang, 'aiError');
-      setMessages(prev => [...prev, { role: 'assistant', content: `⚠️ **Error:** ${errorMsg}` }]);
+      setMessages(prev => [...prev, { role: 'assistant', content: t(lang, 'aiError') }]);
     } finally {
       setIsLoading(false);
     }
@@ -240,7 +269,7 @@ export default function AIConcierge({ user, lang, onAddToCart, onShowRegistratio
         <div className="animate-dancing">
           <ChefHat size={24} />
         </div>
-        <span className="font-black">Weka oder hapa</span>
+        <span className="font-black">Weka oder yako hapa</span>
         <div className="absolute -top-1 -right-1 w-3 h-3 bg-accent rounded-full border-2 border-white animate-pulse" />
       </button>
 
@@ -303,7 +332,7 @@ export default function AIConcierge({ user, lang, onAddToCart, onShowRegistratio
                       <div className="w-1.5 h-1.5 bg-primary/30 rounded-full animate-bounce [animation-delay:0.2s]" />
                       <div className="w-1.5 h-1.5 bg-primary/30 rounded-full animate-bounce [animation-delay:0.4s]" />
                     </div>
-                    <span className="text-xs text-primary/50 italic">{t(lang, 'Thinking')}</span>
+                    <span className="text-xs text-primary/50 italic">{t(lang, 'aiThinking')}</span>
                   </div>
                 </div>
               )}
