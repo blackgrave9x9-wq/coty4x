@@ -1,0 +1,117 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap');
+@import "tailwindcss";
+@plugin "@tailwindcss/typography";
+
+@theme {
+  --font-sans: -apple-system, BlinkMacSystemFont, "San Francisco", "SF Pro Text", "SF Pro Icons", "Inter", "Helvetica Neue", Helvetica, Arial, sans-serif;
+  --font-playfair: var(--font-sans);
+  --font-serif: var(--font-sans);
+  --color-primary: #1B5E20; /* Deep Forest Green */
+  --color-secondary: #4CAF50; /* Leaf Green */
+  --color-accent: #8BC34A; /* Lime Green */
+  --color-bg: #F3F4F6; /* Neutral Grey */
+  --color-text: #1F2937; /* Dark Grey Text */
+  --color-cream: #E5E7EB; /* Lighter Grey */
+}
+
+body {
+  color: var(--color-text);
+  font-family: var(--font-sans);
+  font-size: 1.1rem;
+  font-weight: 600;
+  min-height: 100vh;
+  position: relative;
+  background-color: #F3F4F6; /* Neutral Grey Background */
+  overflow-x: hidden;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+.glassmorphism {
+  background: rgba(255, 255, 255, 0.6);
+  backdrop-filter: blur(24px);
+  -webkit-backdrop-filter: blur(24px);
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  box-shadow: 
+    0 8px 32px 0 rgba(0, 0, 0, 0.1),
+    inset 0 0 0 1px rgba(255, 255, 255, 0.1);
+}
+
+.card-3d {
+  background: rgba(255, 255, 255, 0.4);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  box-shadow: 
+    0 10px 25px -5px rgba(0, 0, 0, 0.05),
+    0 8px 10px -6px rgba(0, 0, 0, 0.05),
+    inset 0 0 0 1px rgba(255, 255, 255, 0.1);
+  transition: all 0.4s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.card-3d:hover {
+  transform: translateY(-4px) scale(1.01);
+  box-shadow: 
+    0 20px 35px -10px rgba(0, 0, 0, 0.15),
+    0 12px 15px -8px rgba(0, 0, 0, 0.15),
+    inset 0 -6px 0 rgba(27, 94, 32, 0.15);
+}
+
+.button-3d {
+  transition: all 0.2s ease;
+  box-shadow: 
+    0 4px 0 rgb(13, 46, 15),
+    0 8px 15px rgba(0, 0, 0, 0.2);
+}
+
+.button-3d:active {
+  transform: translateY(2px);
+  box-shadow: 
+    0 2px 0 rgb(13, 46, 15),
+    0 4px 8px rgba(0, 0, 0, 0.2);
+}
+
+.text-3d {
+  text-shadow: 
+    1px 1px 0px rgba(27, 94, 32, 0.2),
+    2px 2px 0px rgba(27, 94, 32, 0.1),
+    3px 3px 5px rgba(0, 0, 0, 0.15);
+}
+
+.title-3d {
+  text-shadow: 
+    1px 1px 0px #1B5E20,
+    2px 2px 0px #1B5E20,
+    3px 3px 0px #1B5E20,
+    4px 4px 10px rgba(0, 0, 0, 0.3);
+}
+
+.green-gradient {
+  background: linear-gradient(135deg, #1B5E20 0%, #4CAF50 100%);
+}
+
+.text-green-gradient {
+  background: linear-gradient(135deg, #1B5E20 0%, #4CAF50 100%);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+}
+
+.scrollbar-hide::-webkit-scrollbar {
+  display: none;
+}
+.scrollbar-hide {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+
+@keyframes dancing {
+  0%, 100% { transform: translateY(0) rotate(0deg); }
+  25% { transform: translateY(-4px) rotate(-3deg); }
+  50% { transform: translateY(0) rotate(0deg); }
+  75% { transform: translateY(-4px) rotate(3deg); }
+}
+
+.animate-dancing {
+  animation: dancing 1.5s ease-in-out infinite;
+  display: inline-block;
+}
