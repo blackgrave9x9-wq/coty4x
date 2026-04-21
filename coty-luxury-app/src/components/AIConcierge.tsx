@@ -6,70 +6,15 @@ import { Send, X, ChefHat } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import ReactMarkdown from 'react-markdown';
 import { t } from '../i18n';
+import { GoogleGenAI, Type } from "@google/genai";
 
-// ---------- DeepSeek Proxy ----------
-// Tumia endpoint ya proxy yetu (haihitaji API key)
-const PROXY_URL = '/api/ai-proxy';  // Cloudflare Pages function
-
-// Muundo wa tools (unafanana na OpenAI)
-interface DeepSeekTool {
-  type: 'function';
-  function: {
-    name: string;
-    description: string;
-    parameters: {
-      type: 'object';
-      properties: Record<string, any>;
-      required?: string[];
-    };
-  };
-}
-
-const tools: DeepSeekTool[] = [
-  {
-    type: 'function',
-    function: {
-      name: 'placeOrder',
-      description: 'Place order after user confirms "ndio".',
-      parameters: {
-        type: 'object',
-        properties: {
-          items: {
-            type: 'array',
-            items: {
-              type: 'object',
-              properties: {
-                productId: { type: 'string' },
-                name: { type: 'string' },
-                quantity: { type: 'number' },
-                price: { type: 'number' }
-              },
-              required: ['productId', 'name', 'quantity', 'price']
-            }
-          },
-          totalAmount: { type: 'number' }
-        },
-        required: ['items', 'totalAmount']
-      }
-    }
-  },
-  {
-    type: 'function',
-    function: {
-      name: 'showRegistrationForm',
-      description: 'Show registration form.',
-      parameters: { type: 'object', properties: {} }
-    }
-  },
-  {
-    type: 'function',
-    function: {
-      name: 'checkLoyaltyStatus',
-      description: 'Check user points/credits.',
-      parameters: { type: 'object', properties: {} }
-    }
+let genAI: GoogleGenAI | null = null;
+function getAI() {
+  if (!genAI) {
+    genAI = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY || '' });
   }
-];
+  return genAI;
+}
 
 interface Message {
   role: 'user' | 'assistant';
@@ -77,12 +22,7 @@ interface Message {
   isOrder?: boolean;
 }
 
-export default function AIConcierge({ user, lang, onAddToCart, onShowRegistration }: { 
-  user: UserProfile | null; 
-  lang: 'en' | 'sw'; 
-  onAddToCart: (productId: string) => void; 
-  onShowRegistration?: () => void;
-}) {
+export default function AIConcierge({ user, lang, onAddToCart, onShowRegistration }: { user: UserProfile | null, lang: 'en' | 'sw', onAddToCart: (productId: string) => void, onShowRegistration?: () => void }) {
   const [isOpen, setIsOpen] = useState(false);
   const [messages, setMessages] = useState<Message[]>([
     { role: 'assistant', content: t(lang, 'aiWelcome') }
@@ -93,7 +33,6 @@ export default function AIConcierge({ user, lang, onAddToCart, onShowRegistratio
   const [settings, setSettings] = useState<any>({});
   const scrollRef = useRef<HTMLDivElement>(null);
 
-  // Fetch products na settings (sawa na awali)
   useEffect(() => {
     if (!isOpen) return;
 
@@ -120,192 +59,6 @@ export default function AIConcierge({ user, lang, onAddToCart, onShowRegistratio
     }
   }, [messages]);
 
-  // ---------- Kazi ya kuomba DeepSeek kupitia proxy (streaming) ----------
-  const callDeepSeekViaProxy = async (userMessage: string, history: Message[]) => {
-    const systemPrompt = `Wewe ni "LYRA", Concierge wa Coty Luxury. 
-      Respond VERY FAST and SHORT. Use Swahili ALWAYS.
-      User: ${user ? `${user.displayName}` : 'Guest'}
-      Catalog: ${JSON.stringify(products.map(p => ({ n: p.name, p: p.price })))}
-      
-      Rules:
-      1. Short sentences only.
-      2. If user wants items, LIST them + TOTAL in TZS.
-      3. Ask confirmation: "Je, unathibitisha oda hii? Jibu 'ndio' au 'hapana'."
-      4. Use 'placeOrder' ONLY after 'ndio'.
-      5. Use 'showRegistrationForm' for login/register needs.`;
-
-    // Badilisha historia ya mazungumzo kwa muundo wa DeepSeek
-    const apiMessages = [
-      { role: 'system', content: systemPrompt },
-      ...history.slice(1).map(msg => ({
-        role: msg.role === 'assistant' ? 'assistant' : 'user',
-        content: msg.content
-      })),
-      { role: 'user', content: userMessage }
-    ];
-
-    const requestBody = {
-      model: 'deepseek-chat',  // au 'deepseek-reasoner' kwa logic ngumu
-      messages: apiMessages,
-      tools: tools,
-      tool_choice: 'auto',
-      stream: true,
-      temperature: 0.1,
-      max_tokens: 1000
-    };
-
-    const response = await fetch(PROXY_URL, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(requestBody)
-    });
-
-    if (!response.ok) {
-      const errorText = await response.text();
-      throw new Error(`Proxy error: ${response.status} ${errorText}`);
-    }
-
-    // Soma stream (SSE)
-    const reader = response.body?.getReader();
-    const decoder = new TextDecoder();
-    let fullText = '';
-    let accumulatedToolCalls: any[] = [];
-    let isFirstChunk = true;
-
-    while (reader) {
-      const { done, value } = await reader.read();
-      if (done) break;
-
-      const chunk = decoder.decode(value);
-      const lines = chunk.split('\n');
-      for (const line of lines) {
-        if (line.startsWith('data: ')) {
-          const data = line.slice(6);
-          if (data === '[DONE]') continue;
-          try {
-            const parsed = JSON.parse(data);
-            const delta = parsed.choices?.[0]?.delta;
-
-            if (delta?.content) {
-              fullText += delta.content;
-              setMessages(prev => {
-                const last = prev[prev.length - 1];
-                if (last && last.role === 'assistant' && !last.isOrder) {
-                  const updated = [...prev];
-                  updated[updated.length - 1] = { ...last, content: fullText };
-                  return updated;
-                } else {
-                  return [...prev, { role: 'assistant', content: fullText }];
-                }
-              });
-              if (isFirstChunk) {
-                setIsLoading(false);
-                isFirstChunk = false;
-              }
-            }
-
-            // Kusanya tool calls
-            if (delta?.tool_calls) {
-              for (const tc of delta.tool_calls) {
-                const index = tc.index || 0;
-                if (!accumulatedToolCalls[index]) {
-                  accumulatedToolCalls[index] = {
-                    id: tc.id,
-                    type: tc.type,
-                    function: { name: '', arguments: '' }
-                  };
-                }
-                if (tc.function?.name) accumulatedToolCalls[index].function.name = tc.function.name;
-                if (tc.function?.arguments) accumulatedToolCalls[index].function.arguments += tc.function.arguments;
-              }
-            }
-          } catch (e) {
-            console.warn('SSE parse error:', line, e);
-          }
-        }
-      }
-    }
-
-    // Baada ya stream kumalizika, angalia kama kuna tool calls
-    if (accumulatedToolCalls.length > 0) {
-      // Ondoa placeholder ikiwa hakuna maandishi yaliyoandikwa
-      if (!fullText) {
-        setMessages(prev => prev.filter(m => !(m.role === 'assistant' && m.content === '')));
-      }
-      for (const tc of accumulatedToolCalls) {
-        const toolName = tc.function.name;
-        let args: any = {};
-        try {
-          args = JSON.parse(tc.function.arguments || '{}');
-        } catch (e) {
-          console.error('Failed to parse tool arguments', tc.function.arguments);
-        }
-
-        // Tekeleza kazi
-        if (toolName === 'checkLoyaltyStatus') {
-          const credits = user?.loyaltyCredits || 0;
-          const points = user?.loyaltyPoints || 0;
-          const text = lang === 'sw' 
-            ? `Una krediti ${credits} na pointi ${points}. Baki krediti ${30 - (credits % 30)} kupata zawadi inayofuata!` 
-            : `You have ${credits} credits and ${points} points. You need ${30 - (credits % 30)} more credits for your next reward!`;
-          setMessages(prev => [...prev, { role: 'assistant', content: text }]);
-          return;
-        }
-
-        if (toolName === 'showRegistrationForm') {
-          onShowRegistration?.();
-          setMessages(prev => [...prev, { role: 'assistant', content: lang === 'sw' ? "Nimekufungulia fomu ya usajili." : "I have opened the registration form for you." }]);
-          return;
-        }
-
-        if (toolName === 'placeOrder') {
-          if (!user || !user.phoneNumber) {
-            setMessages(prev => [...prev, { role: 'assistant', content: t(lang, 'aiLoginRequired') }]);
-            return;
-          }
-
-          const newOrder: any = {
-            userId: user.uid,
-            items: args.items,
-            totalAmount: args.totalAmount,
-            status: 'pending',
-            createdAt: new Date().toISOString(),
-            customerName: user.displayName || '',
-            customerPhone: user.phoneNumber || '',
-            customerEmail: user.email || '',
-            source: 'lyra',
-            pointsAwarded: true
-          };
-
-          await addDoc(collection(db, 'orders'), newOrder);
-          
-          const userRef = doc(db, 'users', user.uid);
-          await updateDoc(userRef, {
-            loyaltyCredits: increment(3 * args.items.length),
-            loyaltyPoints: increment(Math.floor(args.totalAmount / 1000))
-          });
-          
-          let successMsg = t(lang, 'aiOrderSuccess');
-          successMsg = successMsg.replace('{name}', user.displayName || '');
-          successMsg = successMsg.replace('{amount}', args.totalAmount.toLocaleString());
-          successMsg = successMsg.replace('{phone}', user.phoneNumber || '');
-
-          setMessages(prev => [...prev, { 
-            role: 'assistant', 
-            content: successMsg,
-            isOrder: true
-          }]);
-          return;
-        }
-      }
-    }
-
-    // Hakuna tool call: onyesha maandishi yaliyokusanywa
-    if (!fullText && accumulatedToolCalls.length === 0) {
-      throw new Error('No response from AI');
-    }
-  };
-
   const handleSend = async () => {
     if (!input.trim() || isLoading) return;
 
@@ -314,29 +67,164 @@ export default function AIConcierge({ user, lang, onAddToCart, onShowRegistratio
     setMessages(prev => [...prev, { role: 'user', content: userMessage }]);
     setIsLoading(true);
 
-    // Ongeza placeholder ya assistant (ili kuonyesha streaming)
-    setMessages(prev => [...prev, { role: 'assistant', content: '' }]);
-
     try {
-      await callDeepSeekViaProxy(userMessage, messages);
-    } catch (error: any) {
-      console.error('DeepSeek Proxy Error:', error);
-      // Badilisha placeholder kuwa ujumbe wa kosa
-      setMessages(prev => {
-        const last = prev[prev.length - 1];
-        if (last && last.role === 'assistant' && last.content === '') {
-          const updated = [...prev];
-          updated[updated.length - 1] = { ...last, content: t(lang, 'aiError') };
-          return updated;
+      const systemPrompt = `You are "LYRA", the Coty Luxury AI Assistant. 
+            
+      User Info: ${user ? `Name: ${user.displayName}, Phone: ${user.phoneNumber}, Email: ${user.email}` : 'Not logged in'}
+      Product Catalog: ${JSON.stringify(products.map(p => ({ id: p.id, name: p.name, price: p.price, category: p.category })))}
+      
+      Instructions:
+      1. Respond FAST, VERY SHORT, and DIRECT.
+      2. Use very short sentences. Avoid long explanations.
+      3. When a user mentions products they want, LIST them clearly with their prices and show the TOTAL COST in TZS.
+      4. After listing the items and total, you MUST ask for confirmation in Swahili: "Je, unathibitisha oda hii? Jibu 'ndio' au 'hapana'."
+      5. If the user says "ndio", use the 'placeOrder' tool.
+      6. If the user says "hapana", ask: "Unataka kurekebisha nini?"
+      7. Once they provide changes, update the list and ask for confirmation again.
+      8. If the user is not logged in or hasn't provided details, ask them to login/register first.
+      9. ALWAYS use Swahili for the conversation.
+      10. Avoid any conversational filler. Be like a professional concierge.
+      11. If the user wants to see the registration form, use the 'showRegistrationForm' tool.`;
+
+      const tools = [
+        {
+          functionDeclarations: [
+            {
+              name: "placeOrder",
+              description: "Place an order for the user with specified items. ONLY call this after the user says 'ndio' to confirm the list and total.",
+              parameters: {
+                type: Type.OBJECT,
+                properties: {
+                  items: {
+                    type: Type.ARRAY,
+                    items: {
+                      type: Type.OBJECT,
+                      properties: {
+                        productId: { type: Type.STRING },
+                        name: { type: Type.STRING },
+                        quantity: { type: Type.NUMBER },
+                        price: { type: Type.NUMBER }
+                      },
+                      required: ["productId", "name", "quantity", "price"]
+                    }
+                  },
+                  totalAmount: { type: Type.NUMBER }
+                },
+                required: ["items", "totalAmount"]
+              }
+            },
+            {
+              name: "showRegistrationForm",
+              description: "Show the registration or profile completion form to the user.",
+              parameters: { type: Type.OBJECT, properties: {} }
+            },
+            {
+              name: "checkLoyaltyStatus",
+              description: "Check the user's current loyalty points and credits.",
+              parameters: { type: Type.OBJECT, properties: {} }
+            }
+          ]
         }
-        return [...prev, { role: 'assistant', content: t(lang, 'aiError') }];
+      ];
+
+      const ai = getAI();
+      const response = await ai.models.generateContent({
+        model: "gemini-3-flash-preview",
+        contents: [
+          ...messages.slice(1).map(m => ({ 
+            role: m.role === 'assistant' ? 'model' : 'user', 
+            parts: [{ text: m.content }] 
+          })),
+          { role: "user", parts: [{ text: userMessage }] }
+        ],
+        config: {
+          tools,
+          systemInstruction: systemPrompt,
+        }
       });
+
+      const message = response.candidates?.[0]?.content;
+      if (!message) throw new Error("No response from AI");
+
+      if (response.functionCalls) {
+        const functionCalls = response.functionCalls;
+        for (const toolCall of functionCalls) {
+          const name = toolCall.name;
+          const args = toolCall.args as any;
+
+          if (name === 'checkLoyaltyStatus') {
+            const credits = user?.loyaltyCredits || 0;
+            const points = user?.loyaltyPoints || 0;
+            const text = lang === 'sw' 
+              ? `Una krediti ${credits} na pointi ${points}. Baki krediti ${30 - (credits % 30)} kupata zawadi inayofuata!` 
+              : `You have ${credits} credits and ${points} points. You need ${30 - (credits % 30)} more credits for your next reward!`;
+            setMessages(prev => [...prev, { role: 'assistant', content: text }]);
+            setIsLoading(false);
+            return;
+          }
+
+          if (name === 'showRegistrationForm') {
+            onShowRegistration?.();
+            setMessages(prev => [...prev, { role: 'assistant', content: lang === 'sw' ? "Nimekufungulia fomu ya usajili." : "I have opened the registration form for you." }]);
+            setIsLoading(false);
+            return;
+          }
+
+          if (name === 'placeOrder') {
+            if (!user || !user.phoneNumber) {
+              setMessages(prev => [...prev, { role: 'assistant', content: t(lang, 'aiLoginRequired') }]);
+              setIsLoading(false);
+              return;
+            }
+
+            const newOrder: any = {
+              userId: user.uid,
+              items: args.items,
+              totalAmount: args.totalAmount,
+              status: 'pending',
+              createdAt: new Date().toISOString(),
+              customerName: user.displayName || '',
+              customerPhone: user.phoneNumber || '',
+              customerEmail: user.email || '',
+              source: 'lyra',
+              pointsAwarded: true
+            };
+
+            await addDoc(collection(db, 'orders'), newOrder);
+            
+            const userRef = doc(db, 'users', user.uid);
+            await updateDoc(userRef, {
+              loyaltyCredits: increment(3 * args.items.length),
+              loyaltyPoints: increment(Math.floor(args.totalAmount / 1000))
+            });
+            
+            let successMsg = t(lang, 'aiOrderSuccess');
+            successMsg = successMsg.replace('{name}', user.displayName || '');
+            successMsg = successMsg.replace('{amount}', args.totalAmount.toLocaleString());
+            successMsg = successMsg.replace('{phone}', user.phoneNumber || '');
+
+            setMessages(prev => [...prev, { 
+              role: 'assistant', 
+              content: successMsg,
+              isOrder: true
+            }]);
+            setIsLoading(false);
+            return;
+          }
+        }
+      }
+
+      const text = response.text || t(lang, 'aiFallbackError');
+      setMessages(prev => [...prev, { role: 'assistant', content: text }]);
+    } catch (error: any) {
+      console.error("AI Error:", error);
+      const errorMsg = error.message || t(lang, 'aiError');
+      setMessages(prev => [...prev, { role: 'assistant', content: `⚠️ **Error:** ${errorMsg}` }]);
     } finally {
       setIsLoading(false);
     }
   };
 
-  // ---------- JSX (haijabadilishwa, imesalia kama ilivyo) ----------
   return (
     <>
       <button
@@ -352,7 +240,7 @@ export default function AIConcierge({ user, lang, onAddToCart, onShowRegistratio
         <div className="animate-dancing">
           <ChefHat size={24} />
         </div>
-        <span className="font-black">Weka oder yako hapa</span>
+        <span className="font-black">Weka oder hapa</span>
         <div className="absolute -top-1 -right-1 w-3 h-3 bg-accent rounded-full border-2 border-white animate-pulse" />
       </button>
 
