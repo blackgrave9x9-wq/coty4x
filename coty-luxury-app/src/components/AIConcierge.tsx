@@ -75,7 +75,7 @@ export default function AIConcierge({ user, lang, onAddToCart, onShowRegistratio
       
       Instructions:
       1. Respond FAST, VERY SHORT, and DIRECT.
-      2. Use very short sentences. Avoid long explanations.
+      2. Use very short sentences. Avoid long explanations make responses fast as you can.
       3. When a user mentions products they want, LIST them clearly with their prices and show the TOTAL COST in TZS.
       4. After listing the items and total, you MUST ask for confirmation in Swahili: "Je, unathibitisha oda hii? Jibu 'ndio' au 'hapana'."
       5. If the user says "ndio", use the 'placeOrder' tool.
