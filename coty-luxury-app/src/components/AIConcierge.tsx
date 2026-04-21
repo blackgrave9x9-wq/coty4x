@@ -68,7 +68,7 @@ export default function AIConcierge({ user, lang, onAddToCart, onShowRegistratio
     setIsLoading(true);
 
     try {
-      const systemPrompt = `You are "LYRA", the Coty Luxury AI Assistant. 
+      const systemPrompt = `You are "LYRA", the Coty AI Assistant. 
             
       User Info: ${user ? `Name: ${user.displayName}, Phone: ${user.phoneNumber}, Email: ${user.email}` : 'Not logged in'}
       Product Catalog: ${JSON.stringify(products.map(p => ({ id: p.id, name: p.name, price: p.price, category: p.category })))}
@@ -129,7 +129,7 @@ export default function AIConcierge({ user, lang, onAddToCart, onShowRegistratio
 
       const ai = getAI();
       const response = await ai.models.generateContent({
-        model: "gemini-3-flash-preview",
+        model: "gemini-1.5-latest",
         contents: [
           ...messages.slice(1).map(m => ({ 
             role: m.role === 'assistant' ? 'model' : 'user', 
