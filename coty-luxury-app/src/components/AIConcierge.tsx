@@ -6,16 +6,73 @@ import { Send, X, ChefHat } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import ReactMarkdown from 'react-markdown';
 import { t } from '../i18n';
-import { GoogleGenAI, Type } from "@google/genai";
 
-let genAI: any = null;
-function getAI() {
-  if (!genAI) {
-    // The @google/genai SDK usually uses a direct class or factory
-    genAI = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY || '' });
-  }
-  return genAI;
+// ---------- DeepSeek Client (badala ya Gemini) ----------
+// KUMBUKA: Hii API key itaonekana kwenye frontend ikiwa haipo kwenye backend proxy.
+// Kwa usalama, tumia Cloudflare Worker au Next.js API route kuproxya ombi.
+// Mfano wa proxy umetolewa mwishoni mwa faili.
+const DEEPSEEK_API_KEY = process.env.DEEPSEEK_API_KEY || '';
+const DEEPSEEK_URL = 'https://api.deepseek.com/v1/chat/completions';
+
+interface DeepSeekTool {
+  type: 'function';
+  function: {
+    name: string;
+    description: string;
+    parameters: {
+      type: 'object';
+      properties: Record<string, any>;
+      required?: string[];
+    };
+  };
 }
+
+// Badilisha tools za Gemini kuwa muundo wa DeepSeek (OpenAI)
+const tools: DeepSeekTool[] = [
+  {
+    type: 'function',
+    function: {
+      name: 'placeOrder',
+      description: 'Place order after user confirms "ndio".',
+      parameters: {
+        type: 'object',
+        properties: {
+          items: {
+            type: 'array',
+            items: {
+              type: 'object',
+              properties: {
+                productId: { type: 'string' },
+                name: { type: 'string' },
+                quantity: { type: 'number' },
+                price: { type: 'number' }
+              },
+              required: ['productId', 'name', 'quantity', 'price']
+            }
+          },
+          totalAmount: { type: 'number' }
+        },
+        required: ['items', 'totalAmount']
+      }
+    }
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'showRegistrationForm',
+      description: 'Show registration form.',
+      parameters: { type: 'object', properties: {} }
+    }
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'checkLoyaltyStatus',
+      description: 'Check user points/credits.',
+      parameters: { type: 'object', properties: {} }
+    }
+  }
+];
 
 interface Message {
   role: 'user' | 'assistant';
@@ -60,16 +117,9 @@ export default function AIConcierge({ user, lang, onAddToCart, onShowRegistratio
     }
   }, [messages]);
 
-  const handleSend = async () => {
-    if (!input.trim() || isLoading) return;
-
-    const userMessage = input.trim();
-    setInput('');
-    setMessages(prev => [...prev, { role: 'user', content: userMessage }]);
-    setIsLoading(true);
-
-    try {
-      const systemPrompt = `Wewe ni "LYRA", Concierge wa Coty Luxury. 
+  // Function to call DeepSeek with streaming + tool calls
+  const callDeepSeek = async (userMessage: string, history: Message[]) => {
+    const systemPrompt = `Wewe ni "LYRA", Concierge wa Coty Luxury. 
       Respond VERY FAST and SHORT. Use Swahili ALWAYS.
       User: ${user ? `${user.displayName}` : 'Guest'}
       Catalog: ${JSON.stringify(products.map(p => ({ n: p.name, p: p.price })))}
@@ -81,179 +131,214 @@ export default function AIConcierge({ user, lang, onAddToCart, onShowRegistratio
       4. Use 'placeOrder' ONLY after 'ndio'.
       5. Use 'showRegistrationForm' for login/register needs.`;
 
-      const tools = [
-        {
-          functionDeclarations: [
-            {
-              name: "placeOrder",
-              description: "Place order after user confirms 'ndio'.",
-              parameters: {
-                type: Type.OBJECT,
-                properties: {
-                  items: {
-                    type: Type.ARRAY,
-                    items: {
-                      type: Type.OBJECT,
-                      properties: {
-                        productId: { type: Type.STRING },
-                        name: { type: Type.STRING },
-                        quantity: { type: Type.NUMBER },
-                        price: { type: Type.NUMBER }
-                      },
-                      required: ["productId", "name", "quantity", "price"]
-                    }
-                  },
-                  totalAmount: { type: Type.NUMBER }
-                },
-                required: ["items", "totalAmount"]
-              }
-            },
-            {
-              name: "showRegistrationForm",
-              description: "Show registration form.",
-              parameters: { type: Type.OBJECT, properties: {} }
-            },
-            {
-              name: "checkLoyaltyStatus",
-              description: "Check user points/credits.",
-              parameters: { type: Type.OBJECT, properties: {} }
-            }
-          ]
-        }
-      ];
+    // Convert message history to DeepSeek format (roles: user/assistant)
+    const apiMessages = [
+      { role: 'system', content: systemPrompt },
+      ...history.slice(1).map(msg => ({
+        role: msg.role === 'assistant' ? 'assistant' : 'user',
+        content: msg.content
+      })),
+      { role: 'user', content: userMessage }
+    ];
 
-      const ai = getAI();
-      const stream = await ai.models.generateContentStream({
-        model: "gemini-flash-latest",
-        contents: [
-          ...messages.slice(1).map(m => ({ 
-            role: m.role === 'assistant' ? 'model' : 'user', 
-            parts: [{ text: m.content }] 
-          })),
-          { role: "user", parts: [{ text: userMessage }] }
-        ],
-        config: {
-          tools,
-          systemInstruction: systemPrompt,
-          temperature: 0.1,
-        }
-      });
+    const response = await fetch(DEEPSEEK_URL, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${DEEPSEEK_API_KEY}`
+      },
+      body: JSON.stringify({
+        model: 'deepseek-chat',   // Inaweza kubadilishwa kuwa 'deepseek-reasoner' kwa logic ngumu
+        messages: apiMessages,
+        tools: tools,
+        tool_choice: 'auto',
+        stream: true,
+        temperature: 0.1,
+        max_tokens: 1000
+      })
+    });
 
-      let fullText = "";
-      let hasFunctionCall = false;
-      let firstChunk = true;
-      let collectedFunctionCalls: any[] = [];
+    if (!response.ok) {
+      const errorText = await response.text();
+      throw new Error(`DeepSeek API error: ${response.status} ${errorText}`);
+    }
 
-      // Add a placeholder message for the assistant
-      setMessages(prev => [...prev, { role: 'assistant', content: "" }]);
+    const reader = response.body?.getReader();
+    const decoder = new TextDecoder();
+    let fullText = '';
+    let accumulatedToolCalls: any[] = [];
+    let isFirstChunk = true;
 
-      for await (const chunk of stream) {
-        if (firstChunk) {
-          setIsLoading(false);
-          firstChunk = false;
-        }
-        
-        const text = chunk.text;
-        
-        if (text) {
-          fullText += text;
-          setMessages(prev => {
-            const next = [...prev];
-            next[next.length - 1] = { ...next[next.length - 1], content: fullText };
-            return next;
-          });
-        }
-        
-        const fCalls = chunk.candidates?.[0]?.content?.parts?.filter((p: any) => p.functionCall).map((p: any) => p.functionCall);
-        if (fCalls && fCalls.length > 0) {
-          hasFunctionCall = true;
-          collectedFunctionCalls.push(...fCalls);
-        }
-      }
+    // Soma stream ya SSE (data: {...}\n\n)
+    while (reader) {
+      const { done, value } = await reader.read();
+      if (done) break;
 
-      if (hasFunctionCall && collectedFunctionCalls.length > 0) {
-        // Remove the placeholder if it's just a function call with no text
-        if (!fullText) {
-          setMessages(prev => prev.slice(0, -1));
-        }
-
-        for (const toolCall of collectedFunctionCalls) {
-          const name = toolCall.name;
-          const args = toolCall.args as any;
-
-            if (name === 'checkLoyaltyStatus') {
-              const credits = user?.loyaltyCredits || 0;
-              const points = user?.loyaltyPoints || 0;
-              const text = lang === 'sw' 
-                ? `Una krediti ${credits} na pointi ${points}. Baki krediti ${30 - (credits % 30)} kupata zawadi inayofuata!` 
-                : `You have ${credits} credits and ${points} points. You need ${30 - (credits % 30)} more credits for your next reward!`;
-              setMessages(prev => [...prev, { role: 'assistant', content: text }]);
-              return;
-            }
-
-            if (name === 'showRegistrationForm') {
-              onShowRegistration?.();
-              setMessages(prev => [...prev, { role: 'assistant', content: lang === 'sw' ? "Nimekufungulia fomu ya usajili." : "I have opened the registration form for you." }]);
-              return;
-            }
-
-            if (name === 'placeOrder') {
-              if (!user || !user.phoneNumber) {
-                setMessages(prev => [...prev, { role: 'assistant', content: t(lang, 'aiLoginRequired') }]);
-                return;
-              }
-
-              const newOrder: any = {
-                userId: user.uid,
-                items: args.items,
-                totalAmount: args.totalAmount,
-                status: 'pending',
-                createdAt: new Date().toISOString(),
-                customerName: user.displayName || '',
-                customerPhone: user.phoneNumber || '',
-                customerEmail: user.email || '',
-                source: 'lyra',
-                pointsAwarded: true
-              };
-
-              await addDoc(collection(db, 'orders'), newOrder);
-              
-              const userRef = doc(db, 'users', user.uid);
-              await updateDoc(userRef, {
-                loyaltyCredits: increment(3 * args.items.length),
-                loyaltyPoints: increment(Math.floor(args.totalAmount / 1000))
+      const chunk = decoder.decode(value);
+      const lines = chunk.split('\n');
+      for (const line of lines) {
+        if (line.startsWith('data: ')) {
+          const data = line.slice(6);
+          if (data === '[DONE]') continue;
+          try {
+            const parsed = JSON.parse(data);
+            const delta = parsed.choices?.[0]?.delta;
+            
+            if (delta?.content) {
+              fullText += delta.content;
+              // Update UI incrementally
+              setMessages(prev => {
+                const last = prev[prev.length - 1];
+                if (last && last.role === 'assistant' && !last.isOrder) {
+                  const updated = [...prev];
+                  updated[updated.length - 1] = { ...last, content: fullText };
+                  return updated;
+                } else {
+                  // Kama hakuna placeholder, ongeza moja
+                  return [...prev, { role: 'assistant', content: fullText }];
+                }
               });
-              
-              let successMsg = t(lang, 'aiOrderSuccess');
-              successMsg = successMsg.replace('{name}', user.displayName || '');
-              successMsg = successMsg.replace('{amount}', args.totalAmount.toLocaleString());
-              successMsg = successMsg.replace('{phone}', user.phoneNumber || '');
-
-              setMessages(prev => [...prev, { 
-                role: 'assistant', 
-                content: successMsg,
-                isOrder: true
-              }]);
-              return;
+              if (isFirstChunk) {
+                setIsLoading(false);
+                isFirstChunk = false;
+              }
             }
+
+            // Collect tool calls from delta (DeepSeek inatuma tool_calls kama array)
+            if (delta?.tool_calls) {
+              for (const tc of delta.tool_calls) {
+                // Inawezekana tool_calls inakuja kwa sehemu (index, id, function.name, function.arguments)
+                // Tuna accumulate kwa kutumia index
+                const index = tc.index || 0;
+                if (!accumulatedToolCalls[index]) {
+                  accumulatedToolCalls[index] = {
+                    id: tc.id,
+                    type: tc.type,
+                    function: { name: '', arguments: '' }
+                  };
+                }
+                if (tc.function?.name) accumulatedToolCalls[index].function.name = tc.function.name;
+                if (tc.function?.arguments) accumulatedToolCalls[index].function.arguments += tc.function.arguments;
+              }
+            }
+          } catch (e) {
+            console.warn('Failed to parse SSE chunk:', line, e);
           }
         }
-
-      if (!fullText && !hasFunctionCall) {
-        setMessages(prev => {
-          const next = [...prev];
-          next[next.length - 1] = { ...next[next.length - 1], content: t(lang, 'aiFallbackError') };
-          return next;
-        });
       }
+    }
+
+    // Baada ya stream kumaliza, angalia kama kuna tool calls
+    if (accumulatedToolCalls.length > 0) {
+      // Onyesha placeholder ya kazi ikiwa hakuna maandishi
+      if (!fullText) {
+        setMessages(prev => prev.filter(m => !(m.role === 'assistant' && m.content === '')));
+      }
+      for (const tc of accumulatedToolCalls) {
+        const toolName = tc.function.name;
+        let args: any = {};
+        try {
+          args = JSON.parse(tc.function.arguments || '{}');
+        } catch (e) {
+          console.error('Failed to parse tool arguments', tc.function.arguments);
+        }
+
+        // Tekeleza kazi zinazolingana (sawa na kabla)
+        if (toolName === 'checkLoyaltyStatus') {
+          const credits = user?.loyaltyCredits || 0;
+          const points = user?.loyaltyPoints || 0;
+          const text = lang === 'sw' 
+            ? `Una krediti ${credits} na pointi ${points}. Baki krediti ${30 - (credits % 30)} kupata zawadi inayofuata!` 
+            : `You have ${credits} credits and ${points} points. You need ${30 - (credits % 30)} more credits for your next reward!`;
+          setMessages(prev => [...prev, { role: 'assistant', content: text }]);
+          return;
+        }
+
+        if (toolName === 'showRegistrationForm') {
+          onShowRegistration?.();
+          setMessages(prev => [...prev, { role: 'assistant', content: lang === 'sw' ? "Nimekufungulia fomu ya usajili." : "I have opened the registration form for you." }]);
+          return;
+        }
+
+        if (toolName === 'placeOrder') {
+          if (!user || !user.phoneNumber) {
+            setMessages(prev => [...prev, { role: 'assistant', content: t(lang, 'aiLoginRequired') }]);
+            return;
+          }
+
+          const newOrder: any = {
+            userId: user.uid,
+            items: args.items,
+            totalAmount: args.totalAmount,
+            status: 'pending',
+            createdAt: new Date().toISOString(),
+            customerName: user.displayName || '',
+            customerPhone: user.phoneNumber || '',
+            customerEmail: user.email || '',
+            source: 'lyra',
+            pointsAwarded: true
+          };
+
+          await addDoc(collection(db, 'orders'), newOrder);
+          
+          const userRef = doc(db, 'users', user.uid);
+          await updateDoc(userRef, {
+            loyaltyCredits: increment(3 * args.items.length),
+            loyaltyPoints: increment(Math.floor(args.totalAmount / 1000))
+          });
+          
+          let successMsg = t(lang, 'aiOrderSuccess');
+          successMsg = successMsg.replace('{name}', user.displayName || '');
+          successMsg = successMsg.replace('{amount}', args.totalAmount.toLocaleString());
+          successMsg = successMsg.replace('{phone}', user.phoneNumber || '');
+
+          setMessages(prev => [...prev, { 
+            role: 'assistant', 
+            content: successMsg,
+            isOrder: true
+          }]);
+          return;
+        }
+      }
+    }
+
+    // Hakuna tool call, tumia maandishi yaliyokusanywa
+    if (!fullText && accumulatedToolCalls.length === 0) {
+      throw new Error('No response from AI');
+    }
+  };
+
+  const handleSend = async () => {
+    if (!input.trim() || isLoading) return;
+
+    const userMessage = input.trim();
+    setInput('');
+    setMessages(prev => [...prev, { role: 'user', content: userMessage }]);
+    setIsLoading(true);
+
+    try {
+      // Ongeza placeholder ya assistant kwa streaming
+      setMessages(prev => [...prev, { role: 'assistant', content: '' }]);
+      await callDeepSeek(userMessage, messages);
     } catch (error: any) {
-      console.error("AI Error:", error);
-      setMessages(prev => [...prev, { role: 'assistant', content: t(lang, 'aiError') }]);
+      console.error("DeepSeek Error:", error);
+      setMessages(prev => {
+        const last = prev[prev.length - 1];
+        if (last && last.role === 'assistant' && last.content === '') {
+          // Badilisha placeholder kuwa ujumbe wa kosa
+          const updated = [...prev];
+          updated[updated.length - 1] = { ...last, content: t(lang, 'aiError') };
+          return updated;
+        } else {
+          return [...prev, { role: 'assistant', content: t(lang, 'aiError') }];
+        }
+      });
     } finally {
       setIsLoading(false);
     }
   };
 
+  // ... sehemu ya JSX haibadilishwi, ni sawa kabisa na awali ...
   return (
     <>
       <button
