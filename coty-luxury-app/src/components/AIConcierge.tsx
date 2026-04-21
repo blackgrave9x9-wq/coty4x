@@ -7,13 +7,11 @@ import { motion, AnimatePresence } from 'motion/react';
 import ReactMarkdown from 'react-markdown';
 import { t } from '../i18n';
 
-// ---------- DeepSeek Client (badala ya Gemini) ----------
-// KUMBUKA: Hii API key itaonekana kwenye frontend ikiwa haipo kwenye backend proxy.
-// Kwa usalama, tumia Cloudflare Worker au Next.js API route kuproxya ombi.
-// Mfano wa proxy umetolewa mwishoni mwa faili.
-const DEEPSEEK_API_KEY = process.env.DEEPSEEK_API_KEY || '';
-const DEEPSEEK_URL = 'https://api.deepseek.com/v1/chat/completions';
+// ---------- DeepSeek Proxy ----------
+// Tumia endpoint ya proxy yetu (haihitaji API key)
+const PROXY_URL = '/api/ai-proxy';  // Cloudflare Pages function
 
+// Muundo wa tools (unafanana na OpenAI)
 interface DeepSeekTool {
   type: 'function';
   function: {
@@ -27,7 +25,6 @@ interface DeepSeekTool {
   };
 }
 
-// Badilisha tools za Gemini kuwa muundo wa DeepSeek (OpenAI)
 const tools: DeepSeekTool[] = [
   {
     type: 'function',
@@ -80,7 +77,12 @@ interface Message {
   isOrder?: boolean;
 }
 
-export default function AIConcierge({ user, lang, onAddToCart, onShowRegistration }: { user: UserProfile | null, lang: 'en' | 'sw', onAddToCart: (productId: string) => void, onShowRegistration?: () => void }) {
+export default function AIConcierge({ user, lang, onAddToCart, onShowRegistration }: { 
+  user: UserProfile | null; 
+  lang: 'en' | 'sw'; 
+  onAddToCart: (productId: string) => void; 
+  onShowRegistration?: () => void;
+}) {
   const [isOpen, setIsOpen] = useState(false);
   const [messages, setMessages] = useState<Message[]>([
     { role: 'assistant', content: t(lang, 'aiWelcome') }
@@ -91,6 +93,7 @@ export default function AIConcierge({ user, lang, onAddToCart, onShowRegistratio
   const [settings, setSettings] = useState<any>({});
   const scrollRef = useRef<HTMLDivElement>(null);
 
+  // Fetch products na settings (sawa na awali)
   useEffect(() => {
     if (!isOpen) return;
 
@@ -117,8 +120,8 @@ export default function AIConcierge({ user, lang, onAddToCart, onShowRegistratio
     }
   }, [messages]);
 
-  // Function to call DeepSeek with streaming + tool calls
-  const callDeepSeek = async (userMessage: string, history: Message[]) => {
+  // ---------- Kazi ya kuomba DeepSeek kupitia proxy (streaming) ----------
+  const callDeepSeekViaProxy = async (userMessage: string, history: Message[]) => {
     const systemPrompt = `Wewe ni "LYRA", Concierge wa Coty Luxury. 
       Respond VERY FAST and SHORT. Use Swahili ALWAYS.
       User: ${user ? `${user.displayName}` : 'Guest'}
@@ -131,7 +134,7 @@ export default function AIConcierge({ user, lang, onAddToCart, onShowRegistratio
       4. Use 'placeOrder' ONLY after 'ndio'.
       5. Use 'showRegistrationForm' for login/register needs.`;
 
-    // Convert message history to DeepSeek format (roles: user/assistant)
+    // Badilisha historia ya mazungumzo kwa muundo wa DeepSeek
     const apiMessages = [
       { role: 'system', content: systemPrompt },
       ...history.slice(1).map(msg => ({
@@ -141,35 +144,34 @@ export default function AIConcierge({ user, lang, onAddToCart, onShowRegistratio
       { role: 'user', content: userMessage }
     ];
 
-    const response = await fetch(DEEPSEEK_URL, {
+    const requestBody = {
+      model: 'deepseek-chat',  // au 'deepseek-reasoner' kwa logic ngumu
+      messages: apiMessages,
+      tools: tools,
+      tool_choice: 'auto',
+      stream: true,
+      temperature: 0.1,
+      max_tokens: 1000
+    };
+
+    const response = await fetch(PROXY_URL, {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${DEEPSEEK_API_KEY}`
-      },
-      body: JSON.stringify({
-        model: 'deepseek-chat',   // Inaweza kubadilishwa kuwa 'deepseek-reasoner' kwa logic ngumu
-        messages: apiMessages,
-        tools: tools,
-        tool_choice: 'auto',
-        stream: true,
-        temperature: 0.1,
-        max_tokens: 1000
-      })
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(requestBody)
     });
 
     if (!response.ok) {
       const errorText = await response.text();
-      throw new Error(`DeepSeek API error: ${response.status} ${errorText}`);
+      throw new Error(`Proxy error: ${response.status} ${errorText}`);
     }
 
+    // Soma stream (SSE)
     const reader = response.body?.getReader();
     const decoder = new TextDecoder();
     let fullText = '';
     let accumulatedToolCalls: any[] = [];
     let isFirstChunk = true;
 
-    // Soma stream ya SSE (data: {...}\n\n)
     while (reader) {
       const { done, value } = await reader.read();
       if (done) break;
@@ -183,10 +185,9 @@ export default function AIConcierge({ user, lang, onAddToCart, onShowRegistratio
           try {
             const parsed = JSON.parse(data);
             const delta = parsed.choices?.[0]?.delta;
-            
+
             if (delta?.content) {
               fullText += delta.content;
-              // Update UI incrementally
               setMessages(prev => {
                 const last = prev[prev.length - 1];
                 if (last && last.role === 'assistant' && !last.isOrder) {
@@ -194,7 +195,6 @@ export default function AIConcierge({ user, lang, onAddToCart, onShowRegistratio
                   updated[updated.length - 1] = { ...last, content: fullText };
                   return updated;
                 } else {
-                  // Kama hakuna placeholder, ongeza moja
                   return [...prev, { role: 'assistant', content: fullText }];
                 }
               });
@@ -204,11 +204,9 @@ export default function AIConcierge({ user, lang, onAddToCart, onShowRegistratio
               }
             }
 
-            // Collect tool calls from delta (DeepSeek inatuma tool_calls kama array)
+            // Kusanya tool calls
             if (delta?.tool_calls) {
               for (const tc of delta.tool_calls) {
-                // Inawezekana tool_calls inakuja kwa sehemu (index, id, function.name, function.arguments)
-                // Tuna accumulate kwa kutumia index
                 const index = tc.index || 0;
                 if (!accumulatedToolCalls[index]) {
                   accumulatedToolCalls[index] = {
@@ -222,15 +220,15 @@ export default function AIConcierge({ user, lang, onAddToCart, onShowRegistratio
               }
             }
           } catch (e) {
-            console.warn('Failed to parse SSE chunk:', line, e);
+            console.warn('SSE parse error:', line, e);
           }
         }
       }
     }
 
-    // Baada ya stream kumaliza, angalia kama kuna tool calls
+    // Baada ya stream kumalizika, angalia kama kuna tool calls
     if (accumulatedToolCalls.length > 0) {
-      // Onyesha placeholder ya kazi ikiwa hakuna maandishi
+      // Ondoa placeholder ikiwa hakuna maandishi yaliyoandikwa
       if (!fullText) {
         setMessages(prev => prev.filter(m => !(m.role === 'assistant' && m.content === '')));
       }
@@ -243,7 +241,7 @@ export default function AIConcierge({ user, lang, onAddToCart, onShowRegistratio
           console.error('Failed to parse tool arguments', tc.function.arguments);
         }
 
-        // Tekeleza kazi zinazolingana (sawa na kabla)
+        // Tekeleza kazi
         if (toolName === 'checkLoyaltyStatus') {
           const credits = user?.loyaltyCredits || 0;
           const points = user?.loyaltyPoints || 0;
@@ -302,7 +300,7 @@ export default function AIConcierge({ user, lang, onAddToCart, onShowRegistratio
       }
     }
 
-    // Hakuna tool call, tumia maandishi yaliyokusanywa
+    // Hakuna tool call: onyesha maandishi yaliyokusanywa
     if (!fullText && accumulatedToolCalls.length === 0) {
       throw new Error('No response from AI');
     }
@@ -316,29 +314,29 @@ export default function AIConcierge({ user, lang, onAddToCart, onShowRegistratio
     setMessages(prev => [...prev, { role: 'user', content: userMessage }]);
     setIsLoading(true);
 
+    // Ongeza placeholder ya assistant (ili kuonyesha streaming)
+    setMessages(prev => [...prev, { role: 'assistant', content: '' }]);
+
     try {
-      // Ongeza placeholder ya assistant kwa streaming
-      setMessages(prev => [...prev, { role: 'assistant', content: '' }]);
-      await callDeepSeek(userMessage, messages);
+      await callDeepSeekViaProxy(userMessage, messages);
     } catch (error: any) {
-      console.error("DeepSeek Error:", error);
+      console.error('DeepSeek Proxy Error:', error);
+      // Badilisha placeholder kuwa ujumbe wa kosa
       setMessages(prev => {
         const last = prev[prev.length - 1];
         if (last && last.role === 'assistant' && last.content === '') {
-          // Badilisha placeholder kuwa ujumbe wa kosa
           const updated = [...prev];
           updated[updated.length - 1] = { ...last, content: t(lang, 'aiError') };
           return updated;
-        } else {
-          return [...prev, { role: 'assistant', content: t(lang, 'aiError') }];
         }
+        return [...prev, { role: 'assistant', content: t(lang, 'aiError') }];
       });
     } finally {
       setIsLoading(false);
     }
   };
 
-  // ... sehemu ya JSX haibadilishwi, ni sawa kabisa na awali ...
+  // ---------- JSX (haijabadilishwa, imesalia kama ilivyo) ----------
   return (
     <>
       <button
